@@ -1,17 +1,44 @@
+# Website imports
 import streamlit as st
-# import openai
 import pandas as pd
 import json
 import os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+# LLM imports
+import subprocess
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain.prompts import ChatPromptTemplate
+
+# Configuration
+CHROMA_PATH = "chroma"
+
+PROMPT_TEMPLATE = """
+Answer the question based on the above context: {question}
+"""
+
+def run_llama3(prompt):
+    try:
+        result = subprocess.run(
+            ["ollama", "run", "llama3"],
+            input=prompt,
+            text=True,
+            capture_output=True,
+            check=True,
+            encoding="utf-8" 
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"Error running Llama3: {e.stderr}")
+        return None
 
 # Load the dataset
 @st.cache_data
 def load_data():
     # Replace this with the actual path to your JSON file
-    data = pd.read_json('stock-dashboard/stock_data_with_sentiment.json')
+    data = pd.read_json('stock_data_with_sentiment.json')
     # data['timestamp'] = pd.to_datetime(data['timestamp'])
     return data
 
@@ -25,37 +52,34 @@ page = st.sidebar.radio("Go to", ["Stock Market Chatbot", "Dashboards", "Dataset
 if page == "Stock Market Chatbot":
     st.title("Stock Market Chatbot")
 
+    
     # User input for the prompt
-    prompt = st.text_area(
-        "**Enter your prompt:**",
-        height=300,  # Default height for fallback
-        key="prompt_input",
-        placeholder="Type your prompt here..."
-    )
+    prompt = st.chat_input('Pass your prompt here')
 
+    if prompt:
+        # Prepare the DB.
+        embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
+        st.chat_message('user').markdown(prompt)
+        # Search the DB.
+        results = db.similarity_search_with_relevance_scores(prompt, k=3)
+        if len(results) == 0 or results[0][1] < 0.5 :
+            print(f"Unable to find results.")
+    
+        context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+        prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        prompt = prompt_template.format(context=context_text, question=prompt)
+        print(f"Generated Prompt:\n{prompt}")
 
-    # Generate response button
-    if st.button("Generate Response"):
-        # Combine prompt and instructions
-        final_prompt = prompt
-        if instructions:
-            final_prompt += f"\n\n{instructions}"
-
-        if prompt:
-            # Call OpenAI API
-            with st.spinner("Generating response..."):
-                try:
-                    response = openai.Completion.create(
-                        engine="text-davinci-003",
-                        prompt=final_prompt,
-                        max_tokens=150
-                    )
-                    st.success("Response generated!")
-                    st.write(response.choices[0].text.strip())
-                except Exception as e:
-                    st.error(f"Error: {e}")
+        # Use the Llama3 model
+        response = run_llama3(prompt)
+        if response:
+            st.chat_message('assistant').markdown(response)
         else:
-            st.warning("Please enter a prompt.")
+            st.chat_message('assistant').markdown("Failed to generate a response.")
+        # RUN LLAMA
+    else:
+        st.warning("Please enter a prompt.")
 
 # 2. Dashboards Page
 elif page == "Dashboards":
